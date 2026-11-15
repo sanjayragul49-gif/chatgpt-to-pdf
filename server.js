@@ -1,475 +1,133 @@
-
-const express = require("express");
-const path = require("path");
-const { chromium } = require("playwright");
+import express from "express";
+import { chromium } from "playwright";
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+app.use(express.urlencoded({ extended: false }));
 
-app.use(express.json({ limit: "10mb" }));
-app.use(express.static(path.join(__dirname, "public")));
-
-app.get("/", (req, res) => {
-    res.sendFile(path.join(__dirname, "public", "index.html"));
-});
-
-function validateURL(value) {
-    const url = new URL(value);
-
-    if (
-        url.protocol !== "https:" ||
-        !["chatgpt.com", "www.chatgpt.com"].includes(url.hostname) ||
-        !url.pathname.startsWith("/share/")
-    ) {
-        throw new Error("Invalid ChatGPT share URL");
-    }
-
-    return url.href;
-}
-
-// Extract visible conversation from the current page structure
-async function extractContent(page) {
-    return await page.evaluate(() => {
-
-        const main = document.querySelector("main");
-
-        if (!main) {
-            return {
-                messages: [],
-                fallback: "",
-                error: "Main content not found"
-            };
-        }
-
-        const messages = [];
-
-        const selectors = [
-            '[data-message-author-role="user"]',
-            '[data-message-author-role="assistant"]',
-            '[data-testid^="conversation-turn-"]',
-            '[data-message-id]'
-        ];
-
-        const found = new Set();
-
-        for (const selector of selectors) {
-            main.querySelectorAll(selector).forEach(element => {
-                if (found.has(element)) return;
-                found.add(element);
-
-                const role =
-                    element.getAttribute("data-message-author-role") ||
-                    element.getAttribute("data-author");
-
-                if (role !== "user" && role !== "assistant") return;
-
-                const content =
-                    element.querySelector(".markdown") ||
-                    element.querySelector(".prose") ||
-                    element;
-
-                const html = content.innerHTML;
-                const text = content.innerText?.trim() || "";
-
-                if (text) {
-                    messages.push({
-                        role,
-                        text,
-                        html
-                    });
-                }
-            });
-        }
-
-        // If no message attributes exist, extract the actual main content.
-        // Do not invent user/assistant roles.
-        let fallback = "";
-
-        if (messages.length === 0) {
-            const clone = main.cloneNode(true);
-
-            clone.querySelectorAll(
-                "script,style,button,nav,svg,iframe,input,textarea"
-            ).forEach(el => el.remove());
-
-            // Remove suggested prompts and page navigation.
-            clone.querySelectorAll(
-                '[data-testid*="suggested"],' +
-                '[data-testid*="composer"],' +
-                '[data-testid*="prompt"]'
-            ).forEach(el => el.remove());
-
-            fallback = clone.innerHTML;
-        }
-
-        const images = Array.from(main.querySelectorAll("img"))
-            .map(img => ({
-                src: img.currentSrc || img.src,
-                alt: img.alt || ""
-            }))
-            .filter(img => /^https?:\/\//i.test(img.src));
-
-        return {
-            messages,
-            fallback,
-            images,
-            title: document.title,
-            pageText: main.innerText || ""
-        };
-    });
-}
-
-// PDF document template
-function makePDF(data) {
-
-    let content = "";
-
-    if (data.messages.length > 0) {
-
-        content = data.messages.map(message => {
-
-            const label = message.role === "user" ? "Q." : "A.";
-
-            return `
-                <section class="message">
-                    <div class="label">${label}</div>
-                    <div class="content">${message.html}</div>
-                </section>
-            `;
-        }).join("");
-
-    } else {
-
-        content = `
-            <section class="message">
-                <div class="label">Content</div>
-                <div class="content">${data.fallback}</div>
-            </section>
-        `;
-    }
-
-    return `
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8">
-
+const page_html = (error = "") => `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>ChatGPT Link to PDF</title>
 <style>
-@page {
-    size: A4;
-    margin: 18mm 17mm 20mm;
-}
-
-* {
-    box-sizing: border-box;
-}
-
-body {
-    font-family: Arial, Helvetica, sans-serif;
-    color: #222;
-    font-size: 11pt;
-    line-height: 1.6;
-}
-
-.title {
-    text-align: center;
-    font-size: 19pt;
-    font-weight: bold;
-    color: #000;
-    padding-bottom: 12px;
-    border-bottom: 2px solid #222;
-    margin-bottom: 25px;
-}
-
-.message {
-    display: flex;
-    align-items: flex-start;
-    gap: 12px;
-    margin-bottom: 20px;
-}
-
-.label {
-    width: 45px;
-    min-width: 45px;
-    font-size: 14pt;
-    font-weight: bold;
-    color: black;
-}
-
-.content {
-    flex: 1;
-    min-width: 0;
-    overflow-wrap: anywhere;
-}
-
-p {
-    margin: 0 0 10px;
-}
-
-h1,h2,h3,h4 {
-    color: #111;
-    margin: 12px 0 8px;
-}
-
-ul,ol {
-    padding-left: 25px;
-}
-
-pre {
-    background: #f3f3f3;
-    padding: 12px;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    border: 1px solid #ddd;
-}
-
-code {
-    background: #f3f3f3;
-    padding: 2px 4px;
-    font-family: Consolas, monospace;
-}
-
-table {
-    width: 100%;
-    border-collapse: collapse;
-    margin: 12px 0;
-}
-
-td,th {
-    border: 1px solid #aaa;
-    padding: 7px;
-    text-align: left;
-}
-
-th {
-    background: #eee;
-}
-
-img {
-    max-width: 100%;
-    max-height: 500px;
-    height: auto;
-    object-fit: contain;
-    display: block;
-    margin: 12px 0;
-}
-
-blockquote {
-    border-left: 3px solid #888;
-    padding-left: 12px;
-}
-
-a {
-    color: #222;
-}
-</style>
-</head>
-
-<body>
-    <div class="title">QUESTION &amp; ANSWER NOTES</div>
-    ${content}
-</body>
-</html>`;
-}
-
-// Export route
-app.post("/api/export", async (req, res) => {
-
-    let browser;
-
-    try {
-
-        const shareURL = validateURL(req.body?.url || "");
-
-        console.log("Opening ChatGPT share page:", shareURL);
-
-        browser = await chromium.launch({
-            headless: true,
-            args: [
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage"
-            ]
-        });
-
-        const context = await browser.newContext({
-            viewport: {
-                width: 1280,
-                height: 1000
-            }
-        });
-
-        const page = await context.newPage();
-
-        page.setDefaultNavigationTimeout(60000);
-
-        const response = await page.goto(shareURL, {
-            waitUntil: "domcontentloaded",
-            timeout: 60000
-        });
-
-        console.log(
-            "HTTP Status:",
-            response?.status()
-        );
-
-        // Wait for page rendering
-        await page.waitForTimeout(7000);
-
-        let data = null;
-
-        for (let attempt = 1; attempt <= 5; attempt++) {
-
-            console.log("Extraction attempt:", attempt);
-
-            try {
-                data = await extractContent(page);
-
-                if (
-                    data.messages.length > 0 ||
-                    data.fallback.trim().length > 0
-                ) {
-                    break;
-                }
-
-            } catch (error) {
-                console.log("Retry:", error.message);
-            }
-
-            await page.waitForTimeout(2000);
-        }
-
-        if (!data) {
-            throw new Error("Could not read the ChatGPT page.");
-        }
-
-        console.log("Page title:", data.title);
-        console.log("Messages found:", data.messages.length);
-        console.log("Images found:", data.images.length);
-        console.log("Fallback content:", data.fallback.length);
-
-        if (
-            data.messages.length === 0 &&
-            !data.fallback.trim()
-        ) {
-            throw new Error("No visible conversation content found.");
-        }
-
-        if (data.messages.length > 0) {
-
-            const questions = data.messages.filter(
-                m => m.role === "user"
-            ).length;
-
-            const answers = data.messages.filter(
-                m => m.role === "assistant"
-            ).length;
-
-            console.log("Questions:", questions);
-            console.log("Answers:", answers);
-
-            if (answers === 0) {
-                console.log(
-                    "WARNING: No assistant answers are present in the extracted page."
-                );
-            }
-        }
-
-        // Generate PDF
-        const pdfPage = await context.newPage();
-
-        await pdfPage.setContent(
-            makePDF(data),
-            {
-                waitUntil: "domcontentloaded",
-                timeout: 60000
-            }
-        );
-
-        // Load images
-        await pdfPage.evaluate(async () => {
-
-            await Promise.all(
-                Array.from(document.images).map(img => {
-
-                    if (img.complete) {
-                        return Promise.resolve();
-                    }
-
-                    return new Promise(resolve => {
-
-                        img.onload = resolve;
-                        img.onerror = resolve;
-
-                        setTimeout(resolve, 12000);
-                    });
-                })
-            );
-        });
-
-        const pdf = await pdfPage.pdf({
-            format: "A4",
-            printBackground: true,
-            preferCSSPageSize: true,
-            displayHeaderFooter: true,
-
-            headerTemplate: "<div></div>",
-
-            footerTemplate: `
-                <div style="
-                    width:100%;
-                    text-align:center;
-                    font-size:9px;
-                    color:#777;
-                ">
-                    Page <span class="pageNumber"></span>
-                    of <span class="totalPages"></span>
-                </div>
-            `,
-
-            margin: {
-                top: "18mm",
-                bottom: "20mm",
-                left: "17mm",
-                right: "17mm"
-            }
-        });
-
-        await browser.close();
-        browser = null;
-
-        res.setHeader("Content-Type", "application/pdf");
-
-        res.setHeader(
-            "Content-Disposition",
-            'attachment; filename="ChatGPT_Notes.pdf"'
-        );
-
-        res.setHeader("Content-Length", pdf.length);
-
-        return res.send(pdf);
-
-    } catch (error) {
-
-        console.error("PDF ERROR:", error);
-
-        if (browser) {
-            await browser.close().catch(() => {});
-        }
-
-        if (!res.headersSent) {
-            return res.status(500).json({
-                success: false,
-                error: error.message
-            });
-        }
+:root{--bg:#f6f7f9;--card:#fff;--text:#1a1d21;--muted:#6b7280;--accent:#10a37f;--err:#c0392b}
+@media(prefers-color-scheme:dark){:root{--bg:#14161a;--card:#1d2026;--text:#eceef1;--muted:#9aa1ab;--err:#ff7b6b}}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--text);font-family:system-ui,sans-serif}
+.card{background:var(--card);padding:28px;border-radius:16px;width:min(560px,92vw);box-shadow:0 8px 30px #0001}
+h1{margin:0 0 6px;font-size:1.5rem}p{color:var(--muted);margin:0 0 18px}
+input{width:100%;box-sizing:border-box;padding:12px 14px;border:1px solid #8884;border-radius:10px;font-size:1rem;background:transparent;color:var(--text)}
+button{margin-top:14px;width:100%;padding:12px;border:0;border-radius:10px;background:var(--accent);color:#fff;font-size:1rem}
+button:disabled{opacity:.6}.err{color:var(--err);margin-top:14px;word-break:break-word}
+</style></head><body><div class="card">
+<h1>ChatGPT Link → PDF</h1>
+<p>Share link paste pannunga. Questions + answers + images PDF-a varum.</p>
+<form method="post" action="/convert" onsubmit="b.disabled=true;b.textContent='PDF ready aagudhu... (30-90 sec) wait pannunga'">
+<input name="url" placeholder="https://chatgpt.com/share/..." required>
+<button id="b">Create PDF</button></form>
+${error ? `<div class="err">${error}</div>` : ""}
+</div></body></html>`;
+
+// runs inside the browser: rebuild a clean page with ALL turns (questions + answers + images)
+const REBUILD = () => {
+  let turns = [...document.querySelectorAll('[data-testid^="conversation-turn"]')];
+  if (!turns.length) turns = [...document.querySelectorAll("[data-message-author-role]")];
+  if (!turns.length) return 0;
+  const wrap = document.createElement("div");
+  wrap.id = "export";
+  const h = document.createElement("h1");
+  h.textContent = document.title.replace(/^ChatGPT\s*-\s*/, "");
+  wrap.append(h);
+  let n = 0;
+  for (const t of turns) {
+    const roleEl = t.matches("[data-message-author-role]") ? t : t.querySelector("[data-message-author-role]");
+    const role = roleEl ? roleEl.getAttribute("data-message-author-role") : "assistant";
+    const box = document.createElement("section");
+    box.className = "msg " + role;
+    const label = document.createElement("div");
+    label.className = "role";
+    label.textContent = role === "user" ? "You" : "ChatGPT";
+    box.append(label, t);   // move node: loaded images stay loaded
+    wrap.append(box);
+    n++;
+  }
+  document.documentElement.className = "light";
+  document.documentElement.style.cssText = "background:#fff;color-scheme:light";
+  document.body.replaceChildren(wrap);
+  document.body.style.cssText = "background:#fff;margin:0;height:auto;overflow:visible";
+  const css = document.createElement("style");
+  css.textContent = `
+    #export{font:15px/1.6 system-ui,sans-serif;max-width:800px;margin:0 auto;padding:8px;color:#111}
+    #export h1{font-size:22px;margin:0 0 14px}
+    #export *{color:#111 !important;max-height:none !important;overflow:visible !important}
+    #export button,#export svg{display:none !important}
+    #export .msg{margin:0 0 14px;padding:10px 14px;border-radius:10px;break-inside:auto}
+    #export .msg.user{background:#eef1f5}
+    #export .role{font-weight:700;font-size:12px;text-transform:uppercase;color:#555 !important;margin-bottom:4px}
+    #export img{max-width:100%;height:auto;break-inside:avoid}
+    #export pre{background:#f3f4f6;padding:10px;border-radius:8px;white-space:pre-wrap !important;word-break:break-word}
+    #export table{border-collapse:collapse}#export td,#export th{border:1px solid #ccc;padding:4px 8px}
+  `;
+  document.head.append(css);
+  return n;
+};
+
+const EXPAND = () => {
+  document.querySelectorAll("*").forEach((el) => {
+    const s = getComputedStyle(el);
+    if (/(auto|scroll)/.test(s.overflowY) && el.scrollHeight > el.clientHeight + 20) {
+      el.style.overflow = "visible"; el.style.height = "auto"; el.style.maxHeight = "none";
     }
+    if (s.position === "fixed" || s.position === "sticky") el.style.position = "static";
+  });
+};
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let busy = false;
+
+async function makePdf(url) {
+  const browser = await chromium.launch({ args: ["--no-sandbox", "--disable-dev-shm-usage"] });
+  try {
+    const page = await browser.newPage({ viewport: { width: 1100, height: 900 } });
+    await page.goto(url, { waitUntil: "networkidle", timeout: 60000 });
+    await page.waitForSelector("[data-message-author-role]", { timeout: 25000 }).catch(() => {});
+    // bring every message into view so lazy/virtualised answers + images render
+    for (let round = 0; round < 2; round++) {
+      const count = await page.evaluate(() => document.querySelectorAll("[data-message-author-role]").length);
+      for (let i = 0; i < count; i++) {
+        await page.evaluate((i) => document.querySelectorAll("[data-message-author-role]")[i]?.scrollIntoView({ block: "center" }), i);
+        await sleep(250);
+      }
+    }
+    await page.evaluate(() => document.querySelectorAll("img[loading=lazy]").forEach((i) => (i.loading = "eager")));
+    await page.waitForFunction(() => [...document.images].every((i) => i.complete), null, { timeout: 30000 }).catch(() => {});
+    await sleep(800);
+    const n = await page.evaluate(REBUILD);
+    if (!n) await page.evaluate(EXPAND); // fallback: print page as-is
+    await page.emulateMedia({ media: "screen" });
+    return await page.pdf({
+      format: "A4", printBackground: true,
+      margin: { top: "12mm", bottom: "12mm", left: "10mm", right: "10mm" },
+    });
+  } finally {
+    await browser.close();
+  }
+}
+
+app.get("/", (_req, res) => res.send(page_html()));
+
+app.post("/convert", async (req, res) => {
+  let url = String(req.body.url || "").trim().split("?")[0].split("#")[0];
+  if (url && !url.startsWith("http")) url = "https://" + url;
+  if (!/^https:\/\/(chatgpt\.com|chat\.openai\.com)\/share\/(e\/)?[\w-]+\/?$/.test(url))
+    return res.status(400).send(page_html("Valid ChatGPT share link venum (https://chatgpt.com/share/...)."));
+  if (busy) return res.status(429).send(page_html("Innoru PDF ready aagudhu. 1 minute kalichu try pannunga."));
+  busy = true;
+  try {
+    const pdf = await makePdf(url);
+    res.set({ "Content-Type": "application/pdf", "Content-Disposition": 'attachment; filename="chatgpt-chat.pdf"' });
+    res.send(pdf);
+  } catch (e) {
+    res.status(500).send(page_html("Failed: " + String(e.message).split("\n")[0]));
+  } finally {
+    busy = false;
+  }
 });
 
-app.use((req, res) => {
-    res.status(404).send("Page not found");
-});
-
-app.listen(PORT, "0.0.0.0", () => {
-    console.log("ChatGPT PDF server running on port", PORT);
-});
+app.listen(process.env.PORT || 3000, () => console.log("running"));
