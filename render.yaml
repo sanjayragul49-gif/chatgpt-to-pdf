@@ -1,6 +1,8 @@
+
 services:
   - type: web
     name: chatgpt-to-pdf
     runtime: docker
     plan: starter
-    healthCheckPath: /
+    healthCheckPath: /health
+    autoDeploy: true
