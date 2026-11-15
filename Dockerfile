@@ -1,8 +1,19 @@
 
-FROM mcr.microsoft.com/playwright:v1.48.0-jammy
+
+FROM node:20-bookworm-slim
+
 WORKDIR /app
-COPY package.json .
-RUN npm install --omit=dev
-COPY server.js .
-ENV PORT=10000
-CMD ["node", "server.js"]
+
+COPY package*.json ./
+
+RUN npm install
+
+RUN npx playwright install --with-deps chromium
+
+COPY . .
+
+ENV NODE_ENV=production
+
+EXPOSE 3000
+
+CMD ["npm", "start"]
