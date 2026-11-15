@@ -1,13 +1,13 @@
+
 {
   "name": "chatgpt-to-pdf",
   "version": "1.0.0",
-  "private": true,
-  "description": "Export public ChatGPT shared conversations to PDF",
+  "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
     "express": "^4.21.2",
-    "playwright": "^1.51.0"
+    "playwright": "1.65.1"
   }
 }
