@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ChatGPT to PDF</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="shell">
+    <nav class="nav">
+      <div class="brand"><span class="brand-icon">✦</span> ChatPDF</div>
+      <span class="nav-label">CONVERSATION EXPORTER</span>
+    </nav>
+
+    <section class="hero">
+      <div class="eyebrow"><span></span> SIMPLE · FAST · ORGANIZED</div>
+      <h1>Save your ChatGPT<br><em>conversations.</em></h1>
+      <p class="intro">Turn a public ChatGPT share link into a clean PDF with the conversation text and images visible on the page.</p>
+
+      <form id="exportForm" class="export-card">
+        <label for="shareUrl">CHATGPT SHARE LINK</label>
+        <div class="url-row">
+          <span class="link-icon">↗</span>
+          <input id="shareUrl" type="url" placeholder="https://chatgpt.com/share/..." required>
+        </div>
+        <button id="exportBtn" type="submit"><span>↓</span> Generate PDF</button>
+        <div id="status" class="status" role="status">Paste a public share link to get started.</div>
+      </form>
+
+      <div class="features">
+        <div class="feature"><b>01</b><span>Conversation text</span></div>
+        <div class="feature"><b>02</b><span>Available images</span></div>
+        <div class="feature"><b>03</b><span>A4 PDF export</span></div>
+      </div>
+    </section>
+
+    <footer>
+      <p>Works with public ChatGPT share links only. Private conversations are not accessed.</p>
+      <p>Your link is processed by this server to create the PDF.</p>
+    </footer>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
