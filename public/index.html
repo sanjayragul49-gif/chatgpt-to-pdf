@@ -1,45 +1,111 @@
+
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ChatGPT to PDF</title>
-  <link rel="stylesheet" href="style.css">
+    <meta charset="UTF-8">
+
+    <meta name="viewport"
+          content="width=device-width, initial-scale=1.0">
+
+    <title>ChatGPT to PDF</title>
+
+    <link rel="stylesheet" href="style.css">
 </head>
+
 <body>
-  <main class="shell">
-    <nav class="nav">
-      <div class="brand"><span class="brand-icon">✦</span> ChatPDF</div>
-      <span class="nav-label">CONVERSATION EXPORTER</span>
-    </nav>
+
+<div class="container">
+
+    <header>
+        <h2>✦ ChatGPT PDF</h2>
+        <span>QUESTION & ANSWER EXPORTER</span>
+    </header>
 
     <section class="hero">
-      <div class="eyebrow"><span></span> SIMPLE · FAST · ORGANIZED</div>
-      <h1>Save your ChatGPT<br><em>conversations.</em></h1>
-      <p class="intro">Turn a public ChatGPT share link into a clean PDF with the conversation text and images visible on the page.</p>
 
-      <form id="exportForm" class="export-card">
-        <label for="shareUrl">CHATGPT SHARE LINK</label>
-        <div class="url-row">
-          <span class="link-icon">↗</span>
-          <input id="shareUrl" type="url" placeholder="https://chatgpt.com/share/..." required>
+        <div class="tag">PREVIEW BEFORE PDF</div>
+
+        <h1>
+            Convert your conversation
+            <span>into PDF.</span>
+        </h1>
+
+        <p>
+            Paste your ChatGPT shared link.
+            Preview all questions and answers before downloading.
+        </p>
+
+        <div class="input-card">
+
+            <label>CHATGPT SHARE LINK</label>
+
+            <input
+                type="url"
+                id="shareUrl"
+                placeholder="https://chatgpt.com/share/..."
+            >
+
+            <div class="buttons">
+
+                <button
+                    id="previewBtn"
+                    onclick="previewConversation()">
+
+                    Preview Conversation
+
+                </button>
+
+                <button
+                    id="pdfBtn"
+                    onclick="downloadPDF()"
+                    disabled>
+
+                    Download PDF
+
+                </button>
+
+            </div>
+
+            <div id="status">
+                Paste your public ChatGPT link.
+            </div>
+
         </div>
-        <button id="exportBtn" type="submit"><span>↓</span> Generate PDF</button>
-        <div id="status" class="status" role="status">Paste a public share link to get started.</div>
-      </form>
 
-      <div class="features">
-        <div class="feature"><b>01</b><span>Conversation text</span></div>
-        <div class="feature"><b>02</b><span>Available images</span></div>
-        <div class="feature"><b>03</b><span>A4 PDF export</span></div>
-      </div>
+    </section>
+
+    <!-- PREVIEW SECTION -->
+
+    <section id="previewSection" hidden>
+
+        <div class="preview-header">
+
+            <div>
+                <small>CONTENT CHECK</small>
+
+                <h2 id="conversationTitle">
+                    Conversation Preview
+                </h2>
+            </div>
+
+            <div id="counts"></div>
+
+        </div>
+
+        <div id="warning"></div>
+
+        <div id="messages"></div>
+
     </section>
 
     <footer>
-      <p>Works with public ChatGPT share links only. Private conversations are not accessed.</p>
-      <p>Your link is processed by this server to create the PDF.</p>
+        ChatGPT Conversation PDF Generator
     </footer>
-  </main>
-  <script src="app.js"></script>
+
+</div>
+
+<script src="app.js"></script>
+
 </body>
 </html>
