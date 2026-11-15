@@ -22,13 +22,19 @@ button:disabled{opacity:.6}.err{color:var(--err);margin-top:14px;word-break:brea
 <input name="url" placeholder="https://chatgpt.com/share/..." required>
 <button id="b">Create PDF</button></form>
 ${error ? `<div class="err">${error}</div>` : ""}
+<p style="margin:18px 0 0;font-size:12px">version v3</p>
 </div></body></html>`;
 
 // runs inside the browser: rebuild a clean page with ALL turns (questions + answers + images)
 const REBUILD = () => {
   let turns = [...document.querySelectorAll('[data-testid^="conversation-turn"]')];
   if (!turns.length) turns = [...document.querySelectorAll("[data-message-author-role]")];
-  if (!turns.length) return 0;
+  if (!turns.length) turns = [...document.querySelectorAll("article")];
+  if (!turns.length) {
+    const main = document.querySelector("main");
+    if (!main) return 0;
+    turns = [main];
+  }
   const wrap = document.createElement("div");
   wrap.id = "export";
   const h = document.createElement("h1");
@@ -55,7 +61,7 @@ const REBUILD = () => {
   css.textContent = `
     #export{font:15px/1.6 system-ui,sans-serif;max-width:800px;margin:0 auto;padding:8px;color:#111}
     #export h1{font-size:22px;margin:0 0 14px}
-    #export *{color:#111 !important;max-height:none !important;overflow:visible !important}
+    #export *{content-visibility:visible !important;opacity:1 !important;color:#111 !important;max-height:none !important;overflow:visible !important}
     #export button,#export svg{display:none !important}
     #export .msg{margin:0 0 14px;padding:10px 14px;border-radius:10px;break-inside:auto}
     #export .msg.user{background:#eef1f5}
@@ -82,9 +88,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let busy = false;
 
 async function makePdf(url) {
-  const browser = await chromium.launch({ args: ["--no-sandbox", "--disable-dev-shm-usage"] });
+  const browser = await chromium.launch({ args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"] });
   try {
-    const page = await browser.newPage({ viewport: { width: 1100, height: 900 } });
+    const page = await browser.newPage({
+      viewport: { width: 1100, height: 900 },
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    });
     await page.goto(url, { waitUntil: "networkidle", timeout: 60000 });
     await page.waitForSelector("[data-message-author-role]", { timeout: 25000 }).catch(() => {});
     // bring every message into view so lazy/virtualised answers + images render
@@ -111,6 +120,32 @@ async function makePdf(url) {
 }
 
 app.get("/", (_req, res) => res.send(page_html()));
+
+// /debug?url=https://chatgpt.com/share/xxxx  -> shows what the browser actually sees
+app.get("/debug", async (req, res) => {
+  const url = String(req.query.url || "").split("?")[0];
+  if (!/^https:\/\/(chatgpt\.com|chat\.openai\.com)\/share\//.test(url)) return res.status(400).send("bad url");
+  const browser = await chromium.launch({ args: ["--no-sandbox", "--disable-dev-shm-usage"] });
+  try {
+    const page = await browser.newPage({ viewport: { width: 1100, height: 900 } });
+    await page.goto(url, { waitUntil: "networkidle", timeout: 60000 });
+    await sleep(3000);
+    const info = await page.evaluate(() => ({
+      title: document.title,
+      turns: document.querySelectorAll('[data-testid^="conversation-turn"]').length,
+      roles: [...document.querySelectorAll("[data-message-author-role]")].map((e) => e.getAttribute("data-message-author-role") + ":" + e.innerText.length),
+      articles: document.querySelectorAll("article").length,
+      images: document.images.length,
+      textLength: document.body.innerText.length,
+      textStart: document.body.innerText.slice(0, 600),
+    }));
+    res.json(info);
+  } catch (e) {
+    res.status(500).send(String(e.message).split("\n")[0]);
+  } finally {
+    await browser.close();
+  }
+});
 
 app.post("/convert", async (req, res) => {
   let url = String(req.body.url || "").trim().split("?")[0].split("#")[0];
