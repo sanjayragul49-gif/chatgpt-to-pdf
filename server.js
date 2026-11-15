@@ -13,7 +13,6 @@ app.get("/", (req, res) => {
     res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-// Validate URL
 function validateURL(value) {
     const url = new URL(value);
 
@@ -22,206 +21,132 @@ function validateURL(value) {
         !["chatgpt.com", "www.chatgpt.com"].includes(url.hostname) ||
         !url.pathname.startsWith("/share/")
     ) {
-        throw new Error("Invalid public ChatGPT share URL.");
+        throw new Error("Invalid ChatGPT share URL");
     }
 
     return url.href;
 }
 
-// Extract messages using multiple DOM strategies
-async function extractMessages(page) {
+// Extract visible conversation from the current page structure
+async function extractContent(page) {
     return await page.evaluate(() => {
 
-        const results = [];
-        const seen = new Set();
+        const main = document.querySelector("main");
+
+        if (!main) {
+            return {
+                messages: [],
+                fallback: "",
+                error: "Main content not found"
+            };
+        }
+
+        const messages = [];
 
         const selectors = [
             '[data-message-author-role="user"]',
             '[data-message-author-role="assistant"]',
             '[data-testid^="conversation-turn-"]',
-            'main article'
+            '[data-message-id]'
         ];
 
-        function clean(node) {
-            if (node.nodeType === Node.TEXT_NODE) {
-                return node.textContent
-                    .replace(/&/g, "&amp;")
-                    .replace(/</g, "&lt;")
-                    .replace(/>/g, "&gt;");
-            }
+        const found = new Set();
 
-            if (node.nodeType !== Node.ELEMENT_NODE) {
-                return "";
-            }
+        for (const selector of selectors) {
+            main.querySelectorAll(selector).forEach(element => {
+                if (found.has(element)) return;
+                found.add(element);
 
-            const tag = node.tagName;
+                const role =
+                    element.getAttribute("data-message-author-role") ||
+                    element.getAttribute("data-author");
 
-            if ([
-                "SCRIPT", "STYLE", "IFRAME",
-                "SVG", "BUTTON", "INPUT",
-                "TEXTAREA", "VIDEO", "AUDIO"
-            ].includes(tag)) {
-                return "";
-            }
+                if (role !== "user" && role !== "assistant") return;
 
-            if (tag === "IMG") {
-                const src = node.currentSrc || node.src;
+                const content =
+                    element.querySelector(".markdown") ||
+                    element.querySelector(".prose") ||
+                    element;
 
-                if (src && /^https?:\/\//i.test(src)) {
-                    return `<img src="${src}" alt="">`;
+                const html = content.innerHTML;
+                const text = content.innerText?.trim() || "";
+
+                if (text) {
+                    messages.push({
+                        role,
+                        text,
+                        html
+                    });
                 }
-
-                return "";
-            }
-
-            const allowed = [
-                "P", "BR", "STRONG", "B", "EM", "I",
-                "U", "UL", "OL", "LI", "PRE", "CODE",
-                "BLOCKQUOTE", "H1", "H2", "H3", "H4",
-                "TABLE", "THEAD", "TBODY", "TR", "TH",
-                "TD", "A", "HR", "DEL", "S"
-            ];
-
-            const children = Array.from(node.childNodes)
-                .map(clean)
-                .join("");
-
-            if (!allowed.includes(tag)) {
-                return children;
-            }
-
-            if (tag === "A") {
-                const href = node.href || "";
-                if (/^https?:\/\//i.test(href)) {
-                    return `<a href="${href}">${children}</a>`;
-                }
-                return children;
-            }
-
-            if (tag === "BR" || tag === "HR") {
-                return `<${tag.toLowerCase()}>`;
-            }
-
-            return `<${tag.toLowerCase()}>${children}</${tag.toLowerCase()}>`;
+            });
         }
 
-        // Strategy 1: Explicit message roles
-        const roleElements = Array.from(
-            document.querySelectorAll(
-                '[data-message-author-role="user"],' +
-                '[data-message-author-role="assistant"]'
-            )
-        );
+        // If no message attributes exist, extract the actual main content.
+        // Do not invent user/assistant roles.
+        let fallback = "";
 
-        for (const element of roleElements) {
-            const role = element.getAttribute(
-                "data-message-author-role"
-            );
+        if (messages.length === 0) {
+            const clone = main.cloneNode(true);
 
-            const content =
-                element.querySelector(".markdown") ||
-                element.querySelector(".whitespace-pre-wrap") ||
-                element;
+            clone.querySelectorAll(
+                "script,style,button,nav,svg,iframe,input,textarea"
+            ).forEach(el => el.remove());
 
-            const html = Array.from(content.childNodes)
-                .map(clean)
-                .join("");
+            // Remove suggested prompts and page navigation.
+            clone.querySelectorAll(
+                '[data-testid*="suggested"],' +
+                '[data-testid*="composer"],' +
+                '[data-testid*="prompt"]'
+            ).forEach(el => el.remove());
 
-            const text = content.innerText?.trim() || "";
-
-            if (text && !seen.has(role + text)) {
-                seen.add(role + text);
-                results.push({ role, html, text });
-            }
+            fallback = clone.innerHTML;
         }
 
-        if (results.length > 0) {
-            return {
-                method: "message-role",
-                messages: results
-            };
-        }
-
-        // Strategy 2: Conversation turn containers
-        const turns = Array.from(
-            document.querySelectorAll(
-                '[data-testid^="conversation-turn-"]'
-            )
-        );
-
-        for (const turn of turns) {
-            const user = turn.querySelector(
-                '[data-message-author-role="user"]'
-            );
-
-            const assistant = turn.querySelector(
-                '[data-message-author-role="assistant"]'
-            );
-
-            const element = user || assistant;
-
-            if (!element) continue;
-
-            const role = user ? "user" : "assistant";
-
-            const content =
-                element.querySelector(".markdown") || element;
-
-            const html = Array.from(content.childNodes)
-                .map(clean)
-                .join("");
-
-            const text = content.innerText?.trim() || "";
-
-            if (text && !seen.has(role + text)) {
-                seen.add(role + text);
-                results.push({ role, html, text });
-            }
-        }
-
-        if (results.length > 0) {
-            return {
-                method: "conversation-turn",
-                messages: results
-            };
-        }
-
-        // Strategy 3: Main content diagnostics.
-        // Do not guess which blocks are questions or answers.
-        const main = document.querySelector("main");
+        const images = Array.from(main.querySelectorAll("img"))
+            .map(img => ({
+                src: img.currentSrc || img.src,
+                alt: img.alt || ""
+            }))
+            .filter(img => /^https?:\/\//i.test(img.src));
 
         return {
-            method: "no-supported-message-selector",
-            messages: [],
-            diagnostics: {
-                title: document.title,
-                url: location.href,
-                mainExists: !!main,
-                mainText: main?.innerText?.slice(0, 5000) || "",
-                bodyText: document.body?.innerText?.slice(0, 5000) || "",
-                articleCount: document.querySelectorAll("article").length,
-                turnCount: turns.length,
-                roleCount: roleElements.length
-            }
+            messages,
+            fallback,
+            images,
+            title: document.title,
+            pageText: main.innerText || ""
         };
     });
 }
 
-// Build normal Q&A PDF HTML
-function buildPDF(messages) {
+// PDF document template
+function makePDF(data) {
 
-    const content = messages.map(message => {
+    let content = "";
 
-        const label = message.role === "user" ? "Q." : "A.";
+    if (data.messages.length > 0) {
 
-        return `
+        content = data.messages.map(message => {
+
+            const label = message.role === "user" ? "Q." : "A.";
+
+            return `
+                <section class="message">
+                    <div class="label">${label}</div>
+                    <div class="content">${message.html}</div>
+                </section>
+            `;
+        }).join("");
+
+    } else {
+
+        content = `
             <section class="message">
-                <div class="label">${label}</div>
-                <div class="content">${message.html}</div>
+                <div class="label">Content</div>
+                <div class="content">${data.fallback}</div>
             </section>
         `;
-
-    }).join("");
+    }
 
     return `
 <!DOCTYPE html>
@@ -232,10 +157,12 @@ function buildPDF(messages) {
 <style>
 @page {
     size: A4;
-    margin: 18mm 17mm 20mm 17mm;
+    margin: 18mm 17mm 20mm;
 }
 
-* { box-sizing: border-box; }
+* {
+    box-sizing: border-box;
+}
 
 body {
     font-family: Arial, Helvetica, sans-serif;
@@ -249,9 +176,9 @@ body {
     font-size: 19pt;
     font-weight: bold;
     color: #000;
-    margin-bottom: 28px;
     padding-bottom: 12px;
     border-bottom: 2px solid #222;
+    margin-bottom: 25px;
 }
 
 .message {
@@ -262,11 +189,11 @@ body {
 }
 
 .label {
-    width: 25px;
-    min-width: 25px;
-    font-weight: bold;
+    width: 45px;
+    min-width: 45px;
     font-size: 14pt;
-    color: #000;
+    font-weight: bold;
+    color: black;
 }
 
 .content {
@@ -275,14 +202,18 @@ body {
     overflow-wrap: anywhere;
 }
 
-p { margin: 0 0 10px; }
+p {
+    margin: 0 0 10px;
+}
 
-h1, h2, h3, h4 {
+h1,h2,h3,h4 {
     color: #111;
     margin: 12px 0 8px;
 }
 
-ul, ol { padding-left: 25px; }
+ul,ol {
+    padding-left: 25px;
+}
 
 pre {
     background: #f3f3f3;
@@ -304,13 +235,15 @@ table {
     margin: 12px 0;
 }
 
-th, td {
+td,th {
     border: 1px solid #aaa;
     padding: 7px;
     text-align: left;
 }
 
-th { background: #eee; }
+th {
+    background: #eee;
+}
 
 img {
     max-width: 100%;
@@ -324,31 +257,31 @@ img {
 blockquote {
     border-left: 3px solid #888;
     padding-left: 12px;
-    color: #444;
 }
 
-a { color: #222; }
+a {
+    color: #222;
+}
 </style>
 </head>
 
 <body>
-<div class="title">QUESTION &amp; ANSWER NOTES</div>
-${content}
+    <div class="title">QUESTION &amp; ANSWER NOTES</div>
+    ${content}
 </body>
 </html>`;
 }
 
-// Export API
+// Export route
 app.post("/api/export", async (req, res) => {
 
     let browser;
 
     try {
-        const shareURL = validateURL(
-            String(req.body?.url || "").trim()
-        );
 
-        console.log("Opening:", shareURL);
+        const shareURL = validateURL(req.body?.url || "");
+
+        console.log("Opening ChatGPT share page:", shareURL);
 
         browser = await chromium.launch({
             headless: true,
@@ -370,135 +303,130 @@ app.post("/api/export", async (req, res) => {
 
         page.setDefaultNavigationTimeout(60000);
 
-        // Log navigation without evaluating during navigation.
-        page.on("framenavigated", frame => {
-            if (frame === page.mainFrame()) {
-                console.log("Navigation:", frame.url());
-            }
-        });
-
-        page.on("pageerror", error => {
-            console.log("Browser page error:", error.message);
-        });
-
-        // Open the shared conversation.
         const response = await page.goto(shareURL, {
             waitUntil: "domcontentloaded",
             timeout: 60000
         });
 
         console.log(
-            "HTTP status:",
-            response ? response.status() : "unknown"
+            "HTTP Status:",
+            response?.status()
         );
 
-        // Wait for client-side rendering.
-        await page.waitForTimeout(8000);
+        // Wait for page rendering
+        await page.waitForTimeout(7000);
 
-        // Extract with retries.
-        let extraction = null;
+        let data = null;
 
-        for (let i = 1; i <= 5; i++) {
+        for (let attempt = 1; attempt <= 5; attempt++) {
 
-            console.log("Extraction attempt:", i);
+            console.log("Extraction attempt:", attempt);
 
             try {
-                extraction = await extractMessages(page);
+                data = await extractContent(page);
 
-                if (extraction.messages.length > 0) {
+                if (
+                    data.messages.length > 0 ||
+                    data.fallback.trim().length > 0
+                ) {
                     break;
                 }
 
             } catch (error) {
-                console.log("Extraction error:", error.message);
+                console.log("Retry:", error.message);
             }
 
             await page.waitForTimeout(2000);
         }
 
-        if (!extraction || extraction.messages.length === 0) {
-
-            console.log(
-                "PAGE DIAGNOSTICS:",
-                JSON.stringify(
-                    extraction?.diagnostics || {},
-                    null,
-                    2
-                )
-            );
-
-            throw new Error(
-                "No conversation messages detected. " +
-                "Check PAGE DIAGNOSTICS in Render logs. " +
-                "The share page may be blocked, incomplete, or using a new HTML structure."
-            );
+        if (!data) {
+            throw new Error("Could not read the ChatGPT page.");
         }
 
-        const messages = extraction.messages;
+        console.log("Page title:", data.title);
+        console.log("Messages found:", data.messages.length);
+        console.log("Images found:", data.images.length);
+        console.log("Fallback content:", data.fallback.length);
 
-        const questions = messages.filter(
-            m => m.role === "user"
-        ).length;
-
-        const answers = messages.filter(
-            m => m.role === "assistant"
-        ).length;
-
-        console.log("Extraction method:", extraction.method);
-        console.log("Questions:", questions);
-        console.log("Answers:", answers);
-
-        if (!questions || !answers) {
-            throw new Error(
-                `Incomplete conversation: ${questions} questions and ${answers} answers found.`
-            );
+        if (
+            data.messages.length === 0 &&
+            !data.fallback.trim()
+        ) {
+            throw new Error("No visible conversation content found.");
         }
 
-        // Create a separate PDF page.
+        if (data.messages.length > 0) {
+
+            const questions = data.messages.filter(
+                m => m.role === "user"
+            ).length;
+
+            const answers = data.messages.filter(
+                m => m.role === "assistant"
+            ).length;
+
+            console.log("Questions:", questions);
+            console.log("Answers:", answers);
+
+            if (answers === 0) {
+                console.log(
+                    "WARNING: No assistant answers are present in the extracted page."
+                );
+            }
+        }
+
+        // Generate PDF
         const pdfPage = await context.newPage();
 
-        await pdfPage.setContent(buildPDF(messages), {
-            waitUntil: "domcontentloaded",
-            timeout: 60000
-        });
+        await pdfPage.setContent(
+            makePDF(data),
+            {
+                waitUntil: "domcontentloaded",
+                timeout: 60000
+            }
+        );
 
-        // Wait for images.
+        // Load images
         await pdfPage.evaluate(async () => {
+
             await Promise.all(
                 Array.from(document.images).map(img => {
-
-                    img.loading = "eager";
 
                     if (img.complete) {
                         return Promise.resolve();
                     }
 
                     return new Promise(resolve => {
+
                         img.onload = resolve;
                         img.onerror = resolve;
-                        setTimeout(resolve, 10000);
+
+                        setTimeout(resolve, 12000);
                     });
                 })
             );
         });
 
-        const pdfBuffer = await pdfPage.pdf({
+        const pdf = await pdfPage.pdf({
             format: "A4",
             printBackground: true,
             preferCSSPageSize: true,
             displayHeaderFooter: true,
+
             headerTemplate: "<div></div>",
+
             footerTemplate: `
                 <div style="
                     width:100%;
                     text-align:center;
-                    font-family:Arial;
                     font-size:9px;
-                    color:#777">
+                    color:#777;
+                ">
                     Page <span class="pageNumber"></span>
                     of <span class="totalPages"></span>
                 </div>
             `,
+
             margin: {
                 top: "18mm",
                 bottom: "20mm",
@@ -507,23 +435,23 @@ app.post("/api/export", async (req, res) => {
             }
         });
 
-        console.log("PDF ready:", pdfBuffer.length);
-
         await browser.close();
         browser = null;
 
         res.setHeader("Content-Type", "application/pdf");
+
         res.setHeader(
             "Content-Disposition",
             'attachment; filename="ChatGPT_Notes.pdf"'
         );
-        res.setHeader("Content-Length", pdfBuffer.length);
 
-        return res.send(pdfBuffer);
+        res.setHeader("Content-Length", pdf.length);
+
+        return res.send(pdf);
 
     } catch (error) {
 
-        console.error("EXPORT ERROR:", error);
+        console.error("PDF ERROR:", error);
 
         if (browser) {
             await browser.close().catch(() => {});
@@ -538,23 +466,10 @@ app.post("/api/export", async (req, res) => {
     }
 });
 
-// Unknown route
 app.use((req, res) => {
     res.status(404).send("Page not found");
 });
 
-// Error handling
-app.use((err, req, res, next) => {
-    console.error("SERVER ERROR:", err);
-
-    if (!res.headersSent) {
-        res.status(400).json({
-            success: false,
-            error: err.message
-        });
-    }
-});
-
 app.listen(PORT, "0.0.0.0", () => {
-    console.log("ChatGPT to PDF server running on", PORT);
+    console.log("ChatGPT PDF server running on port", PORT);
 });
